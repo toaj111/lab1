@@ -1,247 +1,121 @@
-NEGATIVE_INFINITY = -10**9
+from collections import defaultdict, deque
+from typing import Dict, List, Tuple
 
-def dna_complement(seq):
-    mapping = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C'}
-    result = ""
-    for ch in seq:
-        result += mapping[ch]
-    return result[::-1]
+class RepeatUnit:
+    def __init__(self, start_idx: int, unit_size: int, repeats: int, is_rev: bool):
+        self.start_idx = start_idx    # 在参考序列中的起始索引
+        self.unit_size = unit_size    # 重复单元的长度（不含重复）
+        self.repeats = repeats        # 重复次数
+        self.is_rev = is_rev          # 是否为反向互补序列
 
-def kmp_search(seq, pattern):
-    positions = []
-    n, m = len(seq), len(pattern)
-    if m == 0:
-        return positions
-    lps = [0] * m
-    j = 0
-    for i in range(1, m):
-        while j > 0 and pattern[i] != pattern[j]:
-            j = lps[j-1]
-        if pattern[i] == pattern[j]:
-            j += 1
-        lps[i] = j
-    j = 0
-    for i in range(n):
-        while j > 0 and seq[i] != pattern[j]:
-            j = lps[j-1]
-        if text[i] == pattern[j]:
-            j += 1
-        if j == m:
-            positions.append(i - m + 1)
-            j = lps[j-1]
-    return positions
+    def __repr__(self):
+        return f"RepeatUnit(start_idx={self.start_idx}, unit_size={self.unit_size}, repeats={self.repeats}, is_rev={self.is_rev})"
 
-def compute_hash_matrix(seq, base=25, mod=10000000007):
-    L = len(seq)
-    hash_mat = [[0 for _ in range(L)] for _ in range(L)]
-    power = [1] * L
-    for i in range(1, L):
-        power[i] = (power[i-1] * base) % mod
-    hash_mat[0][0] = ord(seq[0]) - ord('A') + 1
-    for i in range(1, L):
-        hash_mat[0][i] = (hash_mat[0][i-1] * base + (ord(seq[i]) - ord('A') + 1)) % mod
-    for sub_len in range(1, L+1):
-        for i in range(1, L - sub_len + 1):
-            prev_val = hash_mat[i-1][i+sub_len-2]
-            adjust = (power[sub_len-1] * (ord(seq[i-1]) - ord('A') + 1)) % mod
-            diff = (prev_val - adjust + mod) % mod
-            hash_mat[i][i+sub_len-1] = (diff * base + (ord(seq[i+sub_len-1]) - ord('A') + 1)) % mod
-    return hash_mat
+class GraphStructure:
+    def __init__(self):
+        self.adjacency: Dict[int, Dict[int, RepeatUnit]] = defaultdict(dict)
 
-class AlignmentCell:
-    def __init__(self, score, ref_index, streak):
-        self.score = score
-        self.ref_index = ref_index
-        self.streak = streak
+    def insert_edge(self, src: int, dst: int, unit: RepeatUnit):
+        self.adjacency[src][dst] = unit
 
-class RepeatBlock:
-    def __init__(self, block, ref_start, block_len, occurrences, inverted, q_start, q_end):
-        self.block = block
-        self.ref_start = ref_start
-        self.block_len = block_len
-        self.occurrences = occurrences
-        self.inverted = inverted
-        self.q_start = q_start
-        self.q_end = q_end
+def reverse_complement(seq: str) -> str:
+    comp = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C'}
+    return ''.join(comp[base] for base in reversed(seq))
 
-class RepeatAnalyzer:
-    def __init__(self, ref_seq, query_seq, unit_size=1):
-        self.ref_seq = ref_seq
-        self.query_seq = query_seq
-        self.unit = unit_size
-        self.repeat_blocks = []  
-        self.dp = []           
-        self.best_dp = []      
-        self.bt_matrix = []   
-        self.bt_path = []      
+def discover_edges(ref_seq: str, query_seq: str) -> List[Tuple[int, RepeatUnit]]:
+    found_edges = []
+    substring_map = defaultdict(list)
+    ref_length = len(ref_seq)
+    ref_rc = reverse_complement(ref_seq)
 
-    def init_analysis(self):
-        self.ref_len = len(self.ref_seq) - self.unit + 1
-        self.query_len = len(self.query_seq) - self.unit + 1
-        self.ref_hash = compute_hash_matrix(self.ref_seq)
-        self.query_hash = compute_hash_matrix(self.query_seq)
-        self.ref_rev_hash = compute_hash_matrix(dna_complement(self.ref_seq))
-        
-        self.dp = [[AlignmentCell(NEGATIVE_INFINITY, -1, 0) for _ in range(self.ref_len)]
-                   for _ in range(self.query_len)]
-        self.dp[0][0] = AlignmentCell(0, 0, 1)
-        self.best_dp = [AlignmentCell(NEGATIVE_INFINITY, -1, -1) for _ in range(self.query_len)]
-        self.best_dp[0] = AlignmentCell(0, 0, -1)
-        self.bt_matrix = [[NEGATIVE_INFINITY for _ in range(self.ref_len)] for _ in range(self.query_len)]
-        self.bt_path = [AlignmentCell(0, -1, 0) for _ in range(self.query_len)]
+    # 构建子串映射表
+    for sub_len in range(1, ref_length + 1):
+        for pos in range(ref_length - sub_len + 1):
+            sub_str = ref_seq[pos:pos+sub_len]
+            rev_sub = ref_rc[ref_length - pos - sub_len : ref_length - pos]
+            substring_map[sub_str].append((pos, sub_len, False))
+            substring_map[rev_sub].append((pos, sub_len, True))
 
-    def exact_match(self, qi, rj):
-        if qi + self.unit > len(self.query_seq) or rj + self.unit > len(self.ref_seq):
-            return False
-        return self.query_seq[qi:qi+self.unit] == self.ref_seq[rj:rj+self.unit]
+    # 查询序列处理
+    qry_length = len(query_seq)
+    for sub_len in range(1, qry_length + 1):
+        for start in range(qry_length - sub_len + 1):
+            segment = query_seq[start:start+sub_len]
+            if segment not in substring_map:
+                continue
+            for ref_info in substring_map[segment]:
+                ref_start, length_val, is_rev = ref_info
+                count = 1
+                found_edges.append((start, RepeatUnit(ref_start, length_val, count, is_rev)))
+                nxt = start + sub_len
+                while nxt <= qry_length - sub_len:
+                    if query_seq[nxt:nxt+sub_len] == segment:
+                        count += 1
+                        found_edges.append((start, RepeatUnit(ref_start, length_val, count, is_rev)))
+                    else:
+                        break
+                    nxt += sub_len
+    return found_edges
 
-    def inverse_match(self, qi, rj):
-        idx1 = self.ref_len - rj - 1
-        idx2 = self.ref_len - rj + self.unit - 2
-        if idx1 < 0 or idx1 >= len(self.ref_rev_hash):
-            return False
-        if idx2 < 0 or idx2 >= len(self.ref_rev_hash[idx1]):
-            return False
-        if qi + self.unit > len(self.query_seq):
-            return False
-        return self.query_hash[qi][qi + self.unit - 1] == self.ref_rev_hash[idx1][idx2]
+def build_graph_structure(graph: GraphStructure, ref_seq: str, query_seq: str):
+    edge_list = discover_edges(ref_seq, query_seq)
+    for q_start, unit in edge_list:
+        end_point = q_start + unit.unit_size * unit.repeats
+        graph.insert_edge(q_start, end_point, unit)
 
-    def run_alignment(self):
-        score_main = 50
-        score_new = -10
-        score_main_inv = 49
-        score_new_inv = -10
-        score_cont = 1
+def breadth_first_search(graph: GraphStructure, query_length: int) -> List[RepeatUnit]:
+    path_units = []
+    predecessor = [(-1, 0)] * (query_length + 5)
+    state = [0] * (query_length + 5)
+    queue = deque([(0, 0)])
+    state[0] = 1
 
-        for qi in range(1, self.query_len):
-            for rj in range(self.ref_len):
-                if self.exact_match(qi, rj):
-                    new_val = self.best_dp[qi-1].score + score_main + score_new
-                    self.dp[qi][rj] = AlignmentCell(new_val, self.best_dp[qi-1].ref_index, 1)
-                    if rj - 1 >= 0 and self.exact_match(qi-1, rj-1):
-                        candidate = self.dp[qi-1][rj-1].score + score_main + self.dp[qi-1][rj-1].streak * score_cont
-                        if self.dp[qi][rj].score < candidate:
-                            self.dp[qi][rj] = AlignmentCell(candidate, rj-1, self.dp[qi-1][rj-1].streak + 1)
-                    if self.best_dp[qi].score < self.dp[qi][rj].score:
-                        self.best_dp[qi] = AlignmentCell(self.dp[qi][rj].score, rj, self.dp[qi][rj].ref_index)
-                elif self.inverse_match(qi, rj):
-                    new_val = self.best_dp[qi-1].score + score_main_inv + score_new_inv
-                    self.dp[qi][rj] = AlignmentCell(new_val, self.best_dp[qi-1].ref_index, 1)
-                    if rj + 1 < self.ref_len and self.inverse_match(qi-1, rj+1):
-                        candidate = self.dp[qi-1][rj+1].score + score_main_inv + self.dp[qi-1][rj+1].streak * score_cont
-                        if self.dp[qi][rj].score < candidate:
-                            self.dp[qi][rj] = AlignmentCell(candidate, rj+1, self.dp[qi-1][rj+1].streak + 1)
-                    if self.best_dp[qi].score <= self.dp[qi][rj].score:
-                        self.best_dp[qi] = AlignmentCell(self.dp[qi][rj].score, rj, self.dp[qi][rj].ref_index)
+    while queue:
+        curr_q, curr_ref = queue.popleft()
+        if curr_q == query_length:
+            break
+        for nxt, unit in graph.adjacency.get(curr_q, {}).items():
+            valid_flag = 0
+            if curr_ref == unit.start_idx:
+                valid_flag = 1
+            elif curr_ref == unit.start_idx + unit.unit_size:
+                valid_flag = 2
+            if valid_flag and state[nxt] == 0:
+                state[nxt] = 1
+                if valid_flag == 1:
+                    predecessor[nxt] = (curr_q, unit.repeats - 1)
+                    queue.append((nxt, curr_ref + unit.unit_size))
+                else:
+                    predecessor[nxt] = (curr_q, unit.repeats)
+                    queue.append((nxt, curr_ref))
+        state[curr_q] = 2
 
-    def trace_back(self):
-        qi = self.query_len - 1
-        rj = self.ref_len - 1
-        while qi >= 0 and rj >= 0:
-            self.bt_matrix[qi][rj] = self.dp[qi][rj].score
-            self.bt_path[qi] = AlignmentCell(self.dp[qi][rj].score, rj, self.dp[qi][rj].ref_index)
-            rj = self.dp[qi][rj].ref_index
-            qi -= 1
-
-        q_begin = 0
-        while q_begin < self.query_len:
-            q_end = q_begin + 1
-            while q_end < self.query_len:
-                temp = self.bt_path[q_end].ref_index if self.bt_path[q_end].ref_index != -1 else 0
-                if abs(self.dp[q_end][temp].streak) == 1:
-                    break
-                q_end += 1
-            ref_position = self.bt_path[q_begin].ref_index
-            if ref_position < 0:
-                ref_position = 0
-            if self.inverse_match(q_begin, ref_position):
-                block_obj = RepeatBlock(
-                    self.query_seq[q_begin : q_end],
-                    ref_position,
-                    q_end - q_begin,
-                    1,
-                    True,
-                    q_begin,
-                    q_end - 1
-                )
-            else:
-                block_obj = RepeatBlock(
-                    self.query_seq[q_begin : q_end],
-                    ref_position + (q_end - q_begin),
-                    q_end - q_begin,
-                    1,
-                    False,
-                    q_begin,
-                    q_end - 1
-                )
-            self.repeat_blocks.append(block_obj)
-            q_begin = q_end
-
-    def merge_blocks(self):
-        marker = [[0 for _ in range(self.ref_len)] for _ in range(self.query_len)]
-        for r in range(self.ref_len - 1, -1, -1):
-            q = 0
-            while q < self.query_len and self.bt_matrix[q][r] == NEGATIVE_INFINITY:
-                q += 1
-            if q < self.query_len:
-                marker[q][r] = 1
-
-        for block in self.repeat_blocks:
-            for j in range(block.q_end, block.q_start - 1, -1):
-                temp = self.best_dp[j].ref_index if self.best_dp[j].ref_index != -1 else 0
-                if temp < self.ref_len and marker[j][temp] == 1:
-                    block.block_len -= 1
-
-        idx = len(self.repeat_blocks) - 1
-        while idx >= 0:
-            jdx = 0
-            merged = False
-            while jdx < idx:
-                if (abs(self.repeat_blocks[idx].ref_start - self.repeat_blocks[jdx].ref_start) < 10 and
-                    abs(self.repeat_blocks[idx].block_len - self.repeat_blocks[jdx].block_len) < 10 and
-                    self.repeat_blocks[idx].inverted == self.repeat_blocks[jdx].inverted):
-                    self.repeat_blocks[jdx].occurrences += 1
-                    del self.repeat_blocks[idx]
-                    merged = True
-                    break
-                jdx += 1
-            if not merged:
-                idx -= 1
-        self.repeat_blocks = [blk for blk in self.repeat_blocks if blk.block_len >= 10]
-
-    def output_results(self):
-        header = "{:>5} | {:>8} | {:>4} | {:>5} | {:>5}".format("Idx", "Ref_Pos", "Len", "Count", "Inv")
-        print(header)
-        for i, blk in enumerate(self.repeat_blocks):
-            inv_str = "True" if blk.inverted else "False"
-            print("{:5d} | {:8d} | {:4d} | {:5d} | {:>5}".format(i+1, blk.ref_start, blk.block_len, blk.occurrences, inv_str))
-
-    def analyze(self):
-        self.init_analysis()
-        self.run_alignment()
-        self.trace_back()
-        self.merge_blocks()
-        self.output_results()
-
+    # 回溯路径
+    cur_idx = query_length
+    prev_idx = predecessor[cur_idx][0]
+    while prev_idx != -1:
+        edge_unit = graph.adjacency[prev_idx][cur_idx]
+        edge_unit.repeats = predecessor[cur_idx][1]
+        if edge_unit.repeats > 0:
+            path_units.append(edge_unit)
+        cur_idx = prev_idx
+        prev_idx = predecessor[cur_idx][0]
+    return path_units
 
 def main():
-    try:
-        with open("ref.txt", "r") as ref_file:
-            ref_data = ref_file.readline().strip()
-    except Exception as err:
-        print("无法读取 ref.txt")
-        return
+    query_string = "CTGCAACGTTCGTGGTTCATGTTTGAGCGATAGGCCGAAACTAACCGTGCATGCAACGTTAGTGGATCATTGTGGAACTATAGACTCAAACTAAGCGAGCTTGCAACGTTAGTGGACCCTTTTTGAGCTATAGACGAAAACGGACCGAGGCTGCAAGGTTAGTGGATCATTTTTCAGTTTTAGACACAAACAAACCGAGCCATCAACGTTAGTCGATCATTTTTGTGCTATTGACCATATCTCAGCGAGCCTGCAACGTGAGTGGATCATTCTTGAGCTCTGGACCAAATCTAACCGTGCCAGCAACGCTAGTGGATAATTTTGTTGCTATAGACCAACACTAATCGAGACTGCCTCGTTAGTGCATCATTTTTGCGCCATAGACCATAGCTAAGCGAGCCTGCCTCGTTAGTGCATCATTTTTGCGCCATAGACCATAGCTAAGCGAGCCTGCCTCGTTAGTGCATCATTTTTGCGCCATAGACCATAGCTAAGCGAGCCTGCCTCGTTAGTGCATCATTTTTGCGCCATAGACCATAGCTAAGCGAGCCTGCCTCGTTAGTGCATCATTTTTGCGCCATAGACCATAGCTAAGCGAGCTAGACCAACACTAATCGAGACTGCCTCGTTAGTGCATCATTTTTGCGCCATAGACCATAGCTAAGCGAGCTAGACCAACACTAATCGAGACTGCCTCGTTAGTGCATCATTTTTGCGCCATAGACCATAGCTAAGCGAGCTAGACCAACACTAATCGAGACTGCCTCGTTAGTGCATCATTTTTGCGCCATAGACCATAGCTAAGCGAGCGCTCGCTTAGCTATGGTCTATGGCGCAAAAATGATGCACTAACGAGGCAGTCTCGATTAGTGTTGGTCTATAGCAACAAAATTATCCACTAGCGTTGCTGGCTCGCTTAGCTATGGTCTATGGCGCAAAAATGATGCACTAACGAGGCAGTCTCGATTAGTGTTGGTCTATAGCAACAAAATTATCCACTAGCGTTGCTGCTTACCATCGGACCTCCACGAATCTGAAAAGTTTTAATTTCCGAGCGATACTTACGACCGGACCTCCACGAATCAGAAAGGGTTCACTATCCGCTCGATACATACGATCGGACCTCCACGACTCTGTAAGGTTTCAAAATCCGCACGATAGTTACGACCGTACCTCTACGAATCTATAAGGTTTCAATTTCCGCTGGATCCTTACGATCGGACCTCCTCGAATCTGCAAGGTTTCAATATCCGCTCAATGGTTACGGACGGACCTCCACGCATCTTAAAGGTTAAAATAGGCGCTCGGTACTTACGATCGGACCTCTCCGAATCTCAAAGGTTTCAATATCCGCTTGATACTTACGATCGCAACACCACGGATCTGAAAGGTTTCAATATCCACTCTATA"
+    ref_string = "CTGCAACGTTCGTGGTTCATGTTTGAGCGATAGGCCGAAACTAACCGTGCATGCAACGTTAGTGGATCATTGTGGAACTATAGACTCAAACTAAGCGAGCTTGCAACGTTAGTGGACCCTTTTTGAGCTATAGACGAAAACGGACCGAGGCTGCAAGGTTAGTGGATCATTTTTCAGTTTTAGACACAAACAAACCGAGCCATCAACGTTAGTCGATCATTTTTGTGCTATTGACCATATCTCAGCGAGCCTGCAACGTGAGTGGATCATTCTTGAGCTCTGGACCAAATCTAACCGTGCCAGCAACGCTAGTGGATAATTTTGTTGCTATAGACCAACACTAATCGAGACTGCCTCGTTAGTGCATCATTTTTGCGCCATAGACCATAGCTAAGCGAGCCTTACCATCGGACCTCCACGAATCTGAAAAGTTTTAATTTCCGAGCGATACTTACGACCGGACCTCCACGAATCAGAAAGGGTTCACTATCCGCTCGATACATACGATCGGACCTCCACGACTCTGTAAGGTTTCAAAATCCGCACGATAGTTACGACCGTACCTCTACGAATCTATAAGGTTTCAATTTCCGCTGGATCCTTACGATCGGACCTCCTCGAATCTGCAAGGTTTCAATATCCGCTCAATGGTTACGGACGGACCTCCACGCATCTTAAAGGTTAAAATAGGCGCTCGGTACTTACGATCGGACCTCTCCGAATCTCAAAGGTTTCAATATCCGCTTGATACTTACGATCGCAACACCACGGATCTGAAAGGTTTCAATATCCACTCTATA"
 
-    try:
-        with open("query.txt", "r") as qry_file:
-            qry_data = qry_file.readline().strip()
-    except Exception as err:
-        print("无法读取 query.txt")
-        return
-
-    analyzer = RepeatAnalyzer(ref_data, qry_data, unit_size=1)
-    analyzer.analyze()
+    graph_obj = GraphStructure()
+    build_graph_structure(graph_obj, ref_string, query_string)
+    path = breadth_first_search(graph_obj, len(query_string))
+    
+    print("检测结果：")
+    print("长度\t次数\t参考位置\t方向\t序列")
+    for unit in reversed(path):
+        seq = ref_string[unit.start_idx:unit.start_idx+unit.unit_size]
+        direction = "反向" if unit.is_rev else "正向"
+        print(f"{unit.unit_size}\t{unit.repeats}\t{unit.start_idx + unit.unit_size}\t{direction}\t{seq}")
 
 if __name__ == '__main__':
     main()
-
